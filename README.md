@@ -1,4 +1,4 @@
-Voici un tutoriel étape par étape pour résoudre le problème d'installation de snapd sur Red Hat Enterprise Linux (RHEL) 9.2 :
+Voici un tutoriel étape par étape pour résoudre le problème d'installation de snapd sur Red Hat Enterprise Linux (RHEL) 9.2/9.3 :
 
 ## Préparation
 
