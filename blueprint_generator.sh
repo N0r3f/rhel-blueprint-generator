@@ -1,10 +1,43 @@
 #!/bin/bash
 
+# Fonction pour installer des paquets avec gestion des erreurs
+install_packages() {
+    sudo dnf install -y "$@" || {
+        echo "Erreur lors de l'installation des paquets : $@"
+        return 1
+    }
+}
+
+# Mise à jour du système et installation des dépôts nécessaires
 sudo dnf clean all
-sudo dnf update
-sudo dnf install epel-release osbuild-composer composer-cli cockpit cockpit-composer bash-completion
-#sudo usermod -a -G weldr $USER && newgrp weldr
+sudo dnf update -y
+install_packages epel-release
+
+# Activation des dépôts supplémentaires
+sudo dnf config-manager --set-enabled powertools
+sudo dnf config-manager --add-repo=https://download.docker.com/linux/centos/docker-ce.repo
+
+# Installation des paquets nécessaires
+install_packages osbuild-composer composer-cli cockpit cockpit-composer bash-completion \
+                 docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
+                 postgresql14 postgresql14-server \
+                 brave-browser \
+                 snapd \
+                 gparted \
+                 ImageMagick \
+                 ntfs-3g \
+                 neofetch \
+                 fastfetch \
+                 w3m \
+                 xclip \
+                 wl-clipboard
+
+# Activation des services nécessaires
 sudo systemctl enable --now osbuild-composer.socket
+sudo systemctl enable --now docker
+sudo systemctl enable --now postgresql-14
+
+# Nettoyage du cache et redémarrage du service
 sudo rm -rf /var/cache/osbuild-composer/*
 sudo systemctl restart osbuild-composer
 
@@ -81,6 +114,36 @@ get_installed_packages | while read package; do
     echo "name = \"$package\"" >> "$OUTPUT_FILE"
 done
 
+# Fonction pour résoudre les dépendances et exclure les paquets problématiques
+resolve_dependencies() {
+    local blueprint_file="$1"
+    local resolved_file="${blueprint_file%.toml}_resolved.toml"
+    
+    composer-cli blueprints push "$blueprint_file"
+    if composer-cli blueprints depsolve "$BLUEPRINT_NAME" > /dev/null 2>&1; then
+        echo "Toutes les dépendances sont résolues."
+        cp "$blueprint_file" "$resolved_file"
+    else
+        echo "Résolution des dépendances..."
+        composer-cli blueprints depsolve "$BLUEPRINT_NAME" | grep -v '^\[' | awk '{print $1}' | sort -u > resolved_packages.txt
+        
+        echo "name = \"${BLUEPRINT_NAME}\"" > "$resolved_file"
+        echo "description = \"Blueprint avec dépendances résolues\"" >> "$resolved_file"
+        echo "version = \"0.0.2\"" >> "$resolved_file"
+        
+        while read package; do
+            echo "[[packages]]" >> "$resolved_file"
+            echo "name = \"$package\"" >> "$resolved_file"
+            echo "version = \"*\"" >> "$resolved_file"
+        done < resolved_packages.txt
+        
+        rm resolved_packages.txt
+    fi
+    
+    composer-cli blueprints push "$resolved_file"
+    echo "Blueprint résolu créé : $resolved_file"
+}
+
 # Ajout des services activés
 echo "[customizations.services]" >> "$OUTPUT_FILE"
 echo "enabled = [" >> "$OUTPUT_FILE"
@@ -109,8 +172,33 @@ get_local_groups | while IFS=: read groupname gid; do
     echo "gid = $gid" >> "$OUTPUT_FILE"
 done
 
+# Fonction pour vérifier les dépendances
+check_dependencies() {
+    local missing_deps=()
+    for pkg in "$@"; do
+        if ! rpm -q "$pkg" &>/dev/null; then
+            missing_deps+=("$pkg")
+        fi
+    done
+    
+    if [ ${#missing_deps[@]} -ne 0 ]; then
+        echo "Tentative d'installation des dépendances manquantes : ${missing_deps[*]}"
+        install_packages "${missing_deps[@]}"
+    fi
+}
+
+# Fonction pour vérifier les dépendances
+check_dependencies() {
+    resolve_dependencies "$OUTPUT_FILE"
+}
+
 # Utilisation de composer-cli pour créer le blueprint
 composer-cli blueprints push "$OUTPUT_FILE"
+
+echo "Blueprint créé et poussé vers Image Builder : $BLUEPRINT_NAME"
+
+# Résoudre les dépendances et créer un nouveau blueprint
+resolve_dependencies "$OUTPUT_FILE"
 
 echo "Blueprint créé et poussé vers Image Builder : $BLUEPRINT_NAME"
 
