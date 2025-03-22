@@ -3,7 +3,7 @@
 sudo dnf clean all
 sudo dnf update
 sudo dnf install epel-release osbuild-composer composer-cli cockpit cockpit-composer bash-completion
-sudo usermod -a -G weldr $USER && newgrp weldr
+#sudo usermod -a -G weldr $USER && newgrp weldr
 sudo systemctl enable --now osbuild-composer.socket
 sudo rm -rf /var/cache/osbuild-composer/*
 sudo systemctl restart osbuild-composer
