@@ -1,41 +1,26 @@
-#!/bin/bash
+#!/bin/bash -x
 
 # Fonction pour installer des paquets avec gestion des erreurs
 install_packages() {
-    sudo dnf install -y "$@" || {
-        echo "Erreur lors de l'installation des paquets : $@"
-        return 1
-    }
+  sudo dnf install -y --allowerasing --nobest "$@" || {
+    echo "Erreur lors de l'installation des paquets : $@"
+    return 1
+  }
 }
 
-# Mise à jour du système et installation des dépôts nécessaires
-sudo dnf clean all
-sudo dnf update -y
-install_packages epel-release
+# Fonction de vérification des commandes
+check_command() {
+  if [ $? -ne 0 ]; then
+    echo "Erreur : $1"
+    exit 1
+  fi
+}
 
-# Activation des dépôts supplémentaires
-sudo dnf config-manager --set-enabled powertools
-sudo dnf config-manager --add-repo=https://download.docker.com/linux/centos/docker-ce.repo
-
-# Installation des paquets nécessaires
-install_packages osbuild-composer composer-cli cockpit cockpit-composer bash-completion \
-                 docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
-                 postgresql14 postgresql14-server \
-                 brave-browser \
-                 snapd \
-                 gparted \
-                 ImageMagick \
-                 ntfs-3g \
-                 neofetch \
-                 fastfetch \
-                 w3m \
-                 xclip \
-                 wl-clipboard
+# Installation des paquets nécessaires, y compris ceux pour l'ISO live
+install_packages python3 python3-toml epel-release osbuild-composer composer-cli cockpit cockpit-composer bash-completion dracut-live livecd-tools xorriso anaconda
 
 # Activation des services nécessaires
 sudo systemctl enable --now osbuild-composer.socket
-sudo systemctl enable --now docker
-sudo systemctl enable --now postgresql-14
 
 # Nettoyage du cache et redémarrage du service
 sudo rm -rf /var/cache/osbuild-composer/*
@@ -47,47 +32,56 @@ BLUEPRINT_NAME="system_replica_$(date +%Y%m%d)"
 # Fichier de sortie pour le blueprint
 OUTPUT_FILE="${BLUEPRINT_NAME}.toml"
 
-# Fonction pour obtenir la liste des packages installés
+# Fonction pour obtenir la liste des packages installés (avec version)
 get_installed_packages() {
-    rpm -qa --qf "%{NAME}\n" | sort | uniq
+  rpm -qa --qf "%{NAME} %{VERSION}-%{RELEASE}\n" | sort | uniq
 }
 
 # Fonction pour obtenir les services activés
 get_enabled_services() {
-    systemctl list-unit-files --state=enabled --type=service --no-legend | awk '{print $1}' | sed 's/.service$//'
+  systemctl list-unit-files --state=enabled --type=service --no-legend | awk '{print $1}' | sed 's/.service$//'
 }
 
 # Fonction pour obtenir les utilisateurs locaux
 get_local_users() {
-    getent passwd | awk -F: '$3 >= 1000 && $3 != 65534 {print $1 ":" $3 ":" $4 ":" $6 ":" $7}'
+  getent passwd | awk -F: '$3 >= 1000 && $3 != 65534 {print $1 ":" $3 ":" $4 ":" $6 ":" $7}'
 }
 
 # Fonction pour obtenir les groupes locaux
 get_local_groups() {
-    getent group | awk -F: '$3 >= 1000 && $3 != 65534 {print $1 ":" $3}'
+  getent group | awk -F: '$3 >= 1000 && $3 != 65534 {print $1 ":" $3}'
 }
 
 # Fonction pour obtenir les informations sur le système de fichiers
 get_filesystem_info() {
-    lsblk -nfo NAME,SIZE,FSTYPE,MOUNTPOINT | awk '$3 != "" && $4 != "" && $4 != "/boot/efi" && $4 != "[SWAP]" {
-        size_in_bytes = $2;
-        if (size_in_bytes ~ /K$/) size_in_bytes = substr(size_in_bytes, 1, length(size_in_bytes)-1) * 1024;
-        else if (size_in_bytes ~ /M$/) size_in_bytes = substr(size_in_bytes, 1, length(size_in_bytes)-1) * 1024 * 1024;
-        else if (size_in_bytes ~ /G$/) size_in_bytes = substr(size_in_bytes, 1, length(size_in_bytes)-1) * 1024 * 1024 * 1024;
-        print "[[customizations.filesystem]]";
-        print "device = \"/dev/" $1 "\"";
-        print "size = " size_in_bytes;
-        print "fstype = \"" $3 "\"";
-        print "mountpoint = \"" $4 "\"";
-        print "";
-    }'
+  lsblk -nfo NAME,SIZE,FSTYPE,MOUNTPOINT | awk '$3 != "" && $4 != "" && $4 != "/boot/efi" && $4 != "[SWAP]" {
+    size_in_bytes = $2;
+    if (size_in_bytes ~ /K$/) size_in_bytes = substr(size_in_bytes, 1, length(size_in_bytes)-1) * 1024;
+    else if (size_in_bytes ~ /M$/) size_in_bytes = substr(size_in_bytes, 1, length(size_in_bytes)-1) * 1024 * 1024;
+    else if (size_in_bytes ~ /G$/) size_in_bytes = substr(size_in_bytes, 1, length(size_in_bytes)-1) * 1024 * 1024 * 1024;
+    print "[[customizations.filesystem]]";
+    print "device = \"/dev/" $1 "\"";
+    print "size = " size_in_bytes;
+    print "fstype = \"" $3 "\"";
+    print "mountpoint = \"" $4 "\"";
+    print "";
+  }'
 }
 
-# Création du blueprint
-cat << EOF > "$OUTPUT_FILE"
+# Création du blueprint initial
+create_initial_blueprint() {
+  cat << EOF > "$OUTPUT_FILE"
 name = "${BLUEPRINT_NAME}"
-description = "Blueprint généré automatiquement pour répliquer le système existant"
+description = "Blueprint généré automatiquement pour répliquer le système existant (ISO Live USB)"
 version = "0.0.1"
+
+[[modules]]
+name = "org.fedoraproject.Anaconda"
+config = {}
+
+[[modules]]
+name = "org.fedoraproject.LiveOS"
+config = {variant = "default"}
 
 [customizations]
 hostname = "$(hostname)"
@@ -100,198 +94,147 @@ ntpservers = ["0.pool.ntp.org", "1.pool.ntp.org", "2.pool.ntp.org"]
 languages = ["$(localectl status | grep "System Locale" | sed 's/^.*LANG=\([^ ]*\).*$/\1/')"]
 
 [customizations.kernel]
-append = "$(cat /proc/cmdline | sed 's/BOOT_IMAGE=[^ ]* //')"
+append = "$(cat /proc/cmdline | sed 's/BOOT_IMAGE=[^ ]* //') rd.live.image quiet rhgb"
 
 EOF
 
-# Ajout des informations sur le système de fichiers
-get_filesystem_info >> "$OUTPUT_FILE"
+  # Ajout des informations sur le système de fichiers
+  get_filesystem_info >> "$OUTPUT_FILE"
 
-# Ajout des packages installés
-echo "# Packages installed on the system" >> "$OUTPUT_FILE"
-get_installed_packages | while read package; do
+  # Ajout des packages installés
+  echo "# Packages installed on the system" >> "$OUTPUT_FILE"
+  get_installed_packages | while IFS=' ' read -r package version; do
     echo "[[packages]]" >> "$OUTPUT_FILE"
     echo "name = \"$package\"" >> "$OUTPUT_FILE"
-done
-
-# Fonction pour résoudre les dépendances et exclure les paquets problématiques
-resolve_dependencies() {
-    local blueprint_file="$1"
-    local resolved_file="${blueprint_file%.toml}_resolved.toml"
-    
-    composer-cli blueprints push "$blueprint_file"
-    if composer-cli blueprints depsolve "$BLUEPRINT_NAME" > /dev/null 2>&1; then
-        echo "Toutes les dépendances sont résolues."
-        cp "$blueprint_file" "$resolved_file"
-    else
-        echo "Résolution des dépendances..."
-        composer-cli blueprints depsolve "$BLUEPRINT_NAME" | grep -v '^\[' | awk '{print $1}' | sort -u > resolved_packages.txt
-        
-        echo "name = \"${BLUEPRINT_NAME}\"" > "$resolved_file"
-        echo "description = \"Blueprint avec dépendances résolues\"" >> "$resolved_file"
-        echo "version = \"0.0.2\"" >> "$resolved_file"
-        
-        while read package; do
-            echo "[[packages]]" >> "$resolved_file"
-            echo "name = \"$package\"" >> "$resolved_file"
-            echo "version = \"*\"" >> "$resolved_file"
-        done < resolved_packages.txt
-        
-        rm resolved_packages.txt
-    fi
-    
-    composer-cli blueprints push "$resolved_file"
-    echo "Blueprint résolu créé : $resolved_file"
+    echo "version = \"=$version\"" >> "$OUTPUT_FILE" # Spécifie la version exacte
+  done
 }
 
-# Ajout des services activés
-echo "[customizations.services]" >> "$OUTPUT_FILE"
-echo "enabled = [" >> "$OUTPUT_FILE"
-get_enabled_services | sed 's/^/    "/' | sed 's/$/",/' >> "$OUTPUT_FILE"
-echo "]" >> "$OUTPUT_FILE"
+# Fonction pour valider et corriger la syntaxe TOML avec python3
+validate_toml_syntax() {
+  local file="$1"
+  if python3 -c "import toml; toml.load(open('$file'))" > /dev/null 2>&1; then
+    echo "Syntaxe TOML valide dans $file"
+    return 0
+  else
+    echo "Erreur de syntaxe TOML détectée dans $file"
+    return 1
+  fi
+}
 
-# Ajout des utilisateurs
-get_local_users | while IFS=: read username uid gid home shell; do
+# Ajout des services activés, des utilisateurs et des groupes
+add_customizations() {
+  echo "[customizations.services]" >> "$OUTPUT_FILE"
+  echo "enabled = [" >> "$OUTPUT_FILE"
+  get_enabled_services | sed 's/^/ "/' | sed 's/$/",/' >> "$OUTPUT_FILE"
+  echo "]" >> "$OUTPUT_FILE"
+
+  # Ajout des utilisateurs
+  get_local_users | while IFS=: read username uid gid home shell; do
     echo "[[customizations.user]]" >> "$OUTPUT_FILE"
     echo "name = \"$username\"" >> "$OUTPUT_FILE"
     echo "uid = $uid" >> "$OUTPUT_FILE"
     echo "gid = $gid" >> "$OUTPUT_FILE"
     echo "home = \"$home\"" >> "$OUTPUT_FILE"
     echo "shell = \"$shell\"" >> "$OUTPUT_FILE"
-    
     # Ajout des groupes de l'utilisateur
     echo "groups = [" >> "$OUTPUT_FILE"
-    groups $username | cut -d: -f2 | tr ' ' '\n' | sed 's/^/    "/' | sed 's/$/",/' >> "$OUTPUT_FILE"
+    groups $username | cut -d: -f2 | tr ' ' '\n' | sed 's/^/ "/' | sed 's/$/",/' >> "$OUTPUT_FILE"
     echo "]" >> "$OUTPUT_FILE"
-done
+  done
 
-# Ajout des groupes locaux
-get_local_groups | while IFS=: read groupname gid; do
+  # Ajout des groupes locaux
+  get_local_groups | while IFS=: read groupname gid; do
     echo "[[customizations.group]]" >> "$OUTPUT_FILE"
     echo "name = \"$groupname\"" >> "$OUTPUT_FILE"
     echo "gid = $gid" >> "$OUTPUT_FILE"
-done
-
-# Fonction pour vérifier les dépendances
-check_dependencies() {
-    local missing_deps=()
-    for pkg in "$@"; do
-        if ! rpm -q "$pkg" &>/dev/null; then
-            missing_deps+=("$pkg")
-        fi
-    done
-    
-    if [ ${#missing_deps[@]} -ne 0 ]; then
-        echo "Tentative d'installation des dépendances manquantes : ${missing_deps[*]}"
-        install_packages "${missing_deps[@]}"
-    fi
+  done
 }
 
-# Fonction pour vérifier les dépendances
-check_dependencies() {
-    resolve_dependencies "$OUTPUT_FILE"
-}
-
-# Utilisation de composer-cli pour créer le blueprint
+# Pousser le blueprint vers le serveur
 composer-cli blueprints push "$OUTPUT_FILE"
 
-echo "Blueprint créé et poussé vers Image Builder : $BLUEPRINT_NAME"
+# Tests de validation du blueprint
+validate_blueprint() {
+  echo "Validation du blueprint..."
 
-# Résoudre les dépendances et créer un nouveau blueprint
-resolve_dependencies "$OUTPUT_FILE"
+  # Pousser le blueprint vers le serveur
+  composer-cli blueprints push "$OUTPUT_FILE"
+  
+  # Attendre un court instant pour que le serveur traite le blueprint
+  sleep 2
 
-echo "Blueprint créé et poussé vers Image Builder : $BLUEPRINT_NAME"
+  # Vérifier que le blueprint existe
+  composer-cli blueprints list | grep -q "$BLUEPRINT_NAME"
+  check_command "Le blueprint $BLUEPRINT_NAME n'a pas été créé correctement"
+  
+  # Vérifier la syntaxe du blueprint
+  echo "Vérification de la syntaxe TOML..."
+  if ! validate_toml_syntax "$OUTPUT_FILE"; then
+    echo "Erreur : Le blueprint $OUTPUT_FILE contient des erreurs de syntaxe TOML."
+    return 1
+  fi
 
-# Fonction pour vérifier si une commande s'est exécutée avec succès
-check_command() {
-    if [ $? -ne 0 ]; then
-        echo "Erreur : $1"
-        exit 1
-    fi
+  composer-cli blueprints show "$BLUEPRINT_NAME" > /dev/null 2>&1
+  check_command "Le blueprint $BLUEPRINT_NAME contient des erreurs de syntaxe"
+
+  echo "Le blueprint $BLUEPRINT_NAME a été validé avec succès."
+  return 0
 }
 
-# Tests de validation du blueprint
-echo "Validation du blueprint..."
-
-# Vérifier que le blueprint existe
-composer-cli blueprints list | grep -q "$BLUEPRINT_NAME"
-check_command "Le blueprint $BLUEPRINT_NAME n'a pas été créé correctement"
-
-# Vérifier la syntaxe du blueprint
-composer-cli blueprints show "$BLUEPRINT_NAME" > /dev/null 2>&1
-check_command "Le blueprint $BLUEPRINT_NAME contient des erreurs de syntaxe"
-
-# Vérifier la résolution des dépendances
-composer-cli blueprints depsolve "$BLUEPRINT_NAME" > /dev/null 2>&1
-check_command "Le blueprint $BLUEPRINT_NAME a des problèmes de dépendances"
-
-# Vérifier que le blueprint contient des paquets
-PACKAGE_COUNT=$(composer-cli blueprints show "$BLUEPRINT_NAME" | grep -c '^\[\[packages\]\]')
-if [ "$PACKAGE_COUNT" -eq 0 ]; then
-    echo "Erreur : Aucun paquet n'a été ajouté au blueprint"
-    exit 1
-fi
-
-# Vérifier que le blueprint contient des informations de système de fichiers
-FS_COUNT=$(composer-cli blueprints show "$BLUEPRINT_NAME" | grep -c '^\[\[customizations.filesystem\]\]')
-if [ "$FS_COUNT" -eq 0 ]; then
-    echo "Erreur : Aucune information de système de fichiers n'a été ajoutée au blueprint"
-    exit 1
-fi
-
-# Vérifier que le blueprint contient des utilisateurs
-USER_COUNT=$(composer-cli blueprints show "$BLUEPRINT_NAME" | grep -c '^\[\[customizations.user\]\]')
-if [ "$USER_COUNT" -eq 0 ]; then
-    echo "Erreur : Aucun utilisateur n'a été ajouté au blueprint"
-    exit 1
-fi
-
-# Vérifier que le blueprint contient des groupes
-GROUP_COUNT=$(composer-cli blueprints show "$BLUEPRINT_NAME" | grep -c '^\[\[customizations.group\]\]')
-if [ "$GROUP_COUNT" -eq 0 ]; then
-    echo "Erreur : Aucun groupe n'a été ajouté au blueprint"
-    exit 1
-fi
-
-# Vérifier que le blueprint peut être utilisé pour créer une image ISO
-composer-cli compose types | grep -q "^iso$"
-check_command "Le type d'image 'iso' n'est pas disponible"
-
-composer-cli compose start "$BLUEPRINT_NAME" iso
-check_command "Impossible de démarrer la composition de l'image ISO"
-
-echo "Le blueprint $BLUEPRINT_NAME a été validé avec succès et peut être utilisé pour créer une image ISO."
-
 # Vérifier que le service cockpit est actif
-echo "Vérification du service cockpit..."
-sudo systemctl start cockpit
-sudo systemctl enable cockpit
-sudo systemctl status cockpit > /dev/null 2>&1
-if [ $? -ne 0 ]; then
+configure_cockpit() {
+  echo "Vérification du service cockpit..."
+  sudo systemctl start cockpit
+  sudo systemctl enable cockpit
+  sudo systemctl status cockpit > /dev/null 2>&1
+  if [ $? -ne 0 ]; then
     echo "Erreur : Le service cockpit n'a pas pu être démarré."
     exit 1
-fi
+  fi
 
-# Ouvrir le port 9090 dans le pare-feu si nécessaire
-echo "Configuration du pare-feu..."
-sudo firewall-cmd --zone=public --add-port=9090/tcp --permanent > /dev/null 2>&1
-sudo firewall-cmd --reload > /dev/null 2>&1
+  # Ouvrir le port 9090 dans le pare-feu si nécessaire
+  echo "Configuration du pare-feu..."
+  sudo firewall-cmd --zone=public --add-port=9090/tcp --permanent > /dev/null 2>&1
+  sudo firewall-cmd --reload > /dev/null 2>&1
 
-# Vérifier que le port est ouvert
-sudo firewall-cmd --list-ports | grep -q "9090/tcp"
-if [ $? -ne 0 ]; then
+  # Vérifier que le port est ouvert
+  sudo firewall-cmd --list-ports | grep -q "9090/tcp"
+  if [ $? -ne 0 ]; then
     echo "Erreur : Le port 9090 n'est pas ouvert dans le pare-feu."
     exit 1
-fi
+  fi
 
-# Ouvrir l'interface web dans le navigateur par défaut
-echo "Ouverture de l'interface web dans le navigateur..."
-xdg-open http://localhost:9090/composer > /dev/null 2>&1
-
-if [ $? -ne 0 ]; then
+  # Ouvrir l'interface web dans le navigateur par défaut
+  echo "Ouverture de l'interface web dans le navigateur..."
+  xdg-open http://localhost:9090/ > /dev/null 2>&1
+  if [ $? -ne 0 ]; then
     echo "Erreur : Impossible d'ouvrir le navigateur."
     exit 1
+  fi
+  echo "Interface web ouverte avec succès à l'adresse http://localhost:9090/."
+}
+
+# ==================================================
+# Exécution du script
+# ==================================================
+
+# 1. Créer le blueprint initial
+create_initial_blueprint
+
+# 2. Ajouter les personnalisations (services, utilisateurs, groupes)
+add_customizations
+
+# 3. Valider le blueprint
+if validate_blueprint; then
+  echo "Script terminé avec succès. Un blueprint fonctionnel a été créé."
+else
+  echo "Le blueprint n'est pas valide. Arrêt du script."
+  exit 1
 fi
 
-echo "Interface web ouverte avec succès à l'adresse http://localhost:9090/composer."
+# 4. Configurer et lancer Cockpit
+configure_cockpit
+
+echo "Script terminé."
 
