@@ -33,7 +33,7 @@ EOF
 
 # Création de l'ISO personnalisée
 iso_name="custom_rhel_$(date +%Y%m%d).iso"
-mkksiso --ks $ksfile --add /tmp/custom_files /home/n0r3f/Téléchargements/rhel-9.5-x86_64-boot.iso $iso_name
+mkksiso --ks $ksfile --add /tmp/custom_files /home/$USER/Téléchargements/rhel-9.5-x86_64-boot.iso $iso_name
 
 echo "ISO personnalisée créée : $iso_name"
 
