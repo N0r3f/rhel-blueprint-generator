@@ -1,0 +1,98 @@
+Créer une image d'un système red hat enterprise installé et configuré
+
+1- Installer les paquets nécessaires
+ 
+sudo dnf install anaconda osbuild-composer composer-cli cockpit-composer bash-completion
+
+2- Ajoutez votre utilisateur au groupe weldr pour utiliser composer-cli sans privilèges root 
+
+sudo usermod -a -G weldr $USER
+newgrp weldr
+
+3- Créer la liste des paquets installés 
+
+rpm -qa > installed-packages.txt
+
+4- Activez et démarrez le service osbuild-composer
+
+sudo systemctl enable --now osbuild-composer.socket
+
+5- Créer un fichier blueprint.toml via un script
+
+#!/bin/bash
+
+# Nom du blueprint
+BLUEPRINT_NAME="system_replica_$(date +%Y%m%d)"
+
+# Fichier de sortie pour le blueprint
+OUTPUT_FILE="${BLUEPRINT_NAME}.toml"
+
+# Fonction pour obtenir la liste des packages installés
+get_installed_packages() {
+    rpm -qa --qf "%{NAME}\n" | sort | uniq
+}
+
+# Fonction pour obtenir les services activés
+get_enabled_services() {
+    systemctl list-unit-files --state=enabled --type=service --no-legend | awk '{print $1}' | sed 's/.service$//'
+}
+
+# Création du blueprint
+cat << EOF > "$OUTPUT_FILE"
+name = "${BLUEPRINT_NAME}"
+description = "Blueprint généré automatiquement pour répliquer le système existant"
+version = "0.0.1"
+
+[customizations]
+hostname = "$(hostname)"
+
+[customizations.kernel]
+append = "$(cat /proc/cmdline | sed 's/BOOT_IMAGE=[^ ]* //')"
+
+EOF
+
+# Ajout des packages installés
+echo "[packages]" >> "$OUTPUT_FILE"
+get_installed_packages | while read package; do
+    echo "{ name = \"$package\" }," >> "$OUTPUT_FILE"
+done
+
+# Ajout des services activés
+echo "[services]" >> "$OUTPUT_FILE"
+echo "enabled = [" >> "$OUTPUT_FILE"
+get_enabled_services | while read service; do
+    echo "\"$service\"," >> "$OUTPUT_FILE"
+done
+echo "]" >> "$OUTPUT_FILE"
+
+# Utilisation de composer-cli pour créer le blueprint
+composer-cli blueprints push "$OUTPUT_FILE"
+
+echo "Blueprint créé et poussé vers Image Builder : $BLUEPRINT_NAME"
+
+
+6- 
+
+X- Importez le blueprint dans Image Builder
+
+composer-cli blueprints push custom-blueprint.toml
+
+X- Vérifiez qu'il a été correctement importé
+
+composer-cli blueprints list
+
+X- Lancez la création de l'image ISO en spécifiant le nom du blueprint et le type d'image (live-iso pour une ISO bootable)
+
+composer-cli compose start custom-blueprint live-iso
+
+X- Listez les compositions en cours pour vérifier leur statut
+
+composer-cli compose status
+
+X- Une fois le processus terminé, téléchargez l'image générée
+
+composer-cli compose image <UUID>
+
+X- Vous pouvez tester l'ISO générée en la montant sur une machine virtuelle ou en la gravant sur un support USB
+
+sudo qemu-kvm -m 2048 -cdrom ./custom-blueprint-live.iso -boot d
