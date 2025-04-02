@@ -71,28 +71,26 @@ composer-cli blueprints push "$OUTPUT_FILE"
 echo "Blueprint créé et poussé vers Image Builder : $BLUEPRINT_NAME"
 
 
-6- 
-
-X- Importez le blueprint dans Image Builder
+6- Importez le blueprint dans Image Builder
 
 composer-cli blueprints push custom-blueprint.toml
 
-X- Vérifiez qu'il a été correctement importé
+7- Vérifiez qu'il a été correctement importé
 
 composer-cli blueprints list
 
-X- Lancez la création de l'image ISO en spécifiant le nom du blueprint et le type d'image (live-iso pour une ISO bootable)
+8- Lancez la création de l'image ISO en spécifiant le nom du blueprint et le type d'image (live-iso pour une ISO bootable)
 
 composer-cli compose start custom-blueprint live-iso
 
-X- Listez les compositions en cours pour vérifier leur statut
+9- Listez les compositions en cours pour vérifier leur statut
 
 composer-cli compose status
 
-X- Une fois le processus terminé, téléchargez l'image générée
+10- Une fois le processus terminé, téléchargez l'image générée
 
 composer-cli compose image <UUID>
 
-X- Vous pouvez tester l'ISO générée en la montant sur une machine virtuelle ou en la gravant sur un support USB
+11- Vous pouvez tester l'ISO générée en la montant sur une machine virtuelle ou en la gravant sur un support USB
 
 sudo qemu-kvm -m 2048 -cdrom ./custom-blueprint-live.iso -boot d
